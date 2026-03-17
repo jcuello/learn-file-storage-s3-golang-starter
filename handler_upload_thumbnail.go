@@ -66,6 +66,12 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	parsedMediaType, _, err := mime.ParseMediaType(mediaType)
+	if parsedMediaType != "image/jpeg" && parsedMediaType != "image/png" {
+		respondWithError(w, http.StatusInternalServerError, "Unsupported file type.", err)
+		return
+	}
+
 	thumbnailFilename := fmt.Sprintf("%v%v", videoID, extensions[0])
 	thumbnailPath := path.Join(cfg.assetsRoot, thumbnailFilename)
 	f, err := os.Create(thumbnailPath)
