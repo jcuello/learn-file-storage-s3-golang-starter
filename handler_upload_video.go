@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -94,9 +99,20 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	videoName := base64.RawURLEncoding.EncodeToString(randomBytes)
 	videoFilename := fmt.Sprintf("%v.mp4", videoName)
 	tmpFile.Seek(0, io.SeekStart)
+
+	aspectRatio, err := getVideoAspectRatio(tmpFile.Name())
+	videoKeyPrefix := "other"
+	if aspectRatio == "16:9" {
+		videoKeyPrefix = "landscape"
+	}
+	if aspectRatio == "9:16" {
+		videoKeyPrefix = "portrait"
+	}
+
+	keyName := fmt.Sprintf("%v/%v", videoKeyPrefix, videoFilename)
 	_, err = cfg.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
-		Key:         &videoFilename,
+		Key:         &keyName,
 		Body:        tmpFile,
 		ContentType: &parsedMediaType,
 	})
@@ -105,7 +121,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	videoUrl := fmt.Sprintf("https://%v.s3.%v.amazonaws.com/%v", cfg.s3Bucket, cfg.s3Region, videoFilename)
+	videoUrl := fmt.Sprintf("https://%v.s3.%v.amazonaws.com/%v", cfg.s3Bucket, cfg.s3Region, keyName)
 	videoInfo.VideoURL = &videoUrl
 	err = cfg.db.UpdateVideo(videoInfo)
 	if err != nil {
@@ -114,4 +130,56 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, videoInfo)
+}
+
+const (
+	aspect16x9 = 1.7777
+	aspect9x16 = 0.5625
+)
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	ffprobeCmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	bytesBuffer := bytes.Buffer{}
+	ffprobeCmd.Stdout = &bytesBuffer
+
+	err := ffprobeCmd.Run()
+	if err != nil {
+		return "", err
+	}
+
+	ffprobe := ffprobeResult{}
+	err = json.Unmarshal(bytesBuffer.Bytes(), &ffprobe)
+
+	if err != nil {
+		return "", err
+	}
+
+	if len(ffprobe.Streams) == 0 {
+		return "", errors.New("no stream data found")
+	}
+
+	aspectRatio := ffprobe.Streams[0].Width / ffprobe.Streams[0].Height
+	epsilon := 0.001
+
+	if areAlmostEqual(aspectRatio, aspect16x9, epsilon) {
+		return "16:9", nil
+	} else if areAlmostEqual(aspectRatio, aspect9x16, epsilon) {
+		return "9:16", nil
+	} else {
+		return "other", nil
+	}
+}
+
+func areAlmostEqual(a, b, epsilon float64) bool {
+	if a == b {
+		return true
+	}
+	return math.Abs(a-b) < epsilon
+}
+
+type ffprobeResult struct {
+	Streams []struct {
+		Width  float64 `json:"width"`
+		Height float64 `json:"height"`
+	} `json:"streams"`
 }
