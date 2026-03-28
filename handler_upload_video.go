@@ -89,6 +89,20 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	processedFilepath, err := processVideoForFastStart(tmpFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to process file.", err)
+		return
+	}
+
+	processedFile, err := os.Open(processedFilepath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to open processed file.", err)
+		return
+	}
+	defer os.Remove(processedFile.Name())
+	defer processedFile.Close()
+
 	randomBytes := make([]byte, 32)
 	_, err = rand.Read(randomBytes)
 	if err != nil {
@@ -98,9 +112,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	videoName := base64.RawURLEncoding.EncodeToString(randomBytes)
 	videoFilename := fmt.Sprintf("%v.mp4", videoName)
-	tmpFile.Seek(0, io.SeekStart)
 
-	aspectRatio, err := getVideoAspectRatio(tmpFile.Name())
+	aspectRatio, err := getVideoAspectRatio(processedFile.Name())
 	videoKeyPrefix := "other"
 	if aspectRatio == "16:9" {
 		videoKeyPrefix = "landscape"
@@ -113,7 +126,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	_, err = cfg.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &keyName,
-		Body:        tmpFile,
+		Body:        processedFile,
 		ContentType: &parsedMediaType,
 	})
 	if err != nil {
@@ -182,4 +195,18 @@ type ffprobeResult struct {
 		Width  float64 `json:"width"`
 		Height float64 `json:"height"`
 	} `json:"streams"`
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	tempPath := filePath + ".processing"
+	ffpmegCmd := exec.Command(
+		"ffmpeg", "-i", filePath, "-c", "copy", "-movflags",
+		"faststart", "-f", "mp4", tempPath)
+
+	err := ffpmegCmd.Run()
+	if err != nil {
+		return "", err
+	}
+
+	return tempPath, nil
 }
