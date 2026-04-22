@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 
@@ -132,4 +134,20 @@ func main() {
 
 	log.Printf("Serving on: http://localhost:%s/app/\n", port)
 	log.Fatal(srv.ListenAndServe())
+}
+
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	if video.VideoURL == nil {
+		return video, nil
+	}
+
+	urlParts := strings.Split(*video.VideoURL, ",")
+	url, err := generatePresignedURL(cfg.s3Client, urlParts[0], urlParts[1], time.Hour*24)
+	if err != nil {
+		return video, err
+	}
+
+	// don't save this to the database since we will generate one every time
+	video.VideoURL = &url
+	return video, nil
 }
